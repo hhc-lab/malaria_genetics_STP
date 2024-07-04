@@ -1,0 +1,167 @@
+---
+title: "STP_dcifer"
+author: "Angie"
+date: "2023-11-08"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+**Load libraries and working directory**
+```{r load libs, echo=FALSE, warning = FALSE, message= FALSE}
+
+library(moire)
+library(dcifer)
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+library(reshape2)
+library(tidyr)
+library(waldo)
+library(tidyverse)
+library(stringr)
+library(tools)
+library(purrr)
+library(parallel)
+library(data.table)
+library(ggalt)
+library(vctrs)
+library(plotly)
+library(cowplot)
+library(igraph)
+library(descriptr)
+library(Polychrome)
+library(trelliscopejs)
+library(crosstalk)
+library(shiny)
+library(htmltools)
+library(htmlwidgets)
+library(viridis)
+library(geojsonio)
+library(geojsonsf)
+library(sf)
+library(ggthemes)
+library(rcartocolor)
+library(car)
+library(gridExtra)
+library(ggrepel)
+library(readxl)
+library(scales)
+library(ggnewscale)
+
+setwd("C:/Users/User1/SynologyDrive/UCSF work/STP data/ParagonV4") # Change it to your dir path
+```
+
+
+# Chapter 6 - Dcifer and cluster analysis
+
+
+# Import data
+```{r import data, echo=FALSE, warning = FALSE, message= FALSE}
+data0 <- read.csv("C:/Users/User1/SynologyDrive/UCSF work/STP data/ParagonV4/data0.csv", header = T)
+moire_results <- readr::read_rds("C:/Users/User1/SynologyDrive/UCSF work/STP data/ParagonV4/moire/moire_results.rds")
+moire_data <- read.csv("C:/Users/User1/SynologyDrive/UCSF work/STP data/ParagonV4/moire/moire_data.csv", header = T)
+dat <- moire::load_long_form_data(moire_data)
+new_meta <- read_csv(file.path("./combine_list/new_meta.csv"), show_col_types = FALSE)
+```
+
+
+**Dcifer run**
+```{r Dcifer run, echo=FALSE, warning = FALSE, message= FALSE}
+
+## Create Dcifer input
+#calculate_median_afs <- function(moire_results) {
+#  median_afs <- lapply(moire_results$chains[[1]]$allele_freqs, function(af) {
+#    mat <- matrix(unlist(af), ncol = length(af))
+#    d <- dist(t(mat))
+#    af[[which.min(rowSums(as.matrix(d)))]]
+#  })
+#}
+
+#filtered_dat <- moire_data %>% filter(! locus %in% dat$uninformative_loci)
+#setdiff(moire_results[["args"]][["data"]][["loci"]], unique(filtered_dat$locus))
+
+#mydsmp <- dcifer::formatDat(filtered_dat, "sample_id", "locus", "allele")
+#coi   <- moire::summarize_coi(moire_results)$post_coi_med
+#afreq <- calculate_median_afs(moire_results)
+
+
+## Name allele frequencies
+#for (i in 1:length(afreq)) {
+#  names(afreq[[i]]) <- names(moire_results$data$data[[i]][[1]])
+#  afreq[[i]] = abs(afreq[[i]]) / sum(abs(afreq[[i]]))
+#}
+
+#dsmp2 <- dcifer::matchAfreq(mydsmp, afreq)
+#dres0 <- ibdDat(dsmp2, coi, afreq, pval = TRUE, confint = TRUE, rnull = 0, alpha = 0.05, nr = 1e3)   
+
+## Output dcifer results
+#write_rds(dres0, "./dcifer/dres0.rds")
+
+```
+
+
+
+**Dcifer heatmap**
+```{r Dcifer heatmap, echo=FALSE, warning = FALSE, message= FALSE}
+
+# Import dcifer results - dres
+dres <- readr::read_rds("C:/Users/User1/SynologyDrive/UCSF work/STP data/ParagonV4/dcifer/dcifer_results.rds")
+
+### Plot relatedness heatmap
+plot_heatmap <- function(dist_mat, epi_dat=NULL, key=NULL, disp="label", annotation=NULL) {
+  to_plot <- matrix_to_longformat(dist_mat)
+  hc <- hclust(as.dist(1 - dist_mat))
+  order = hc$order
+  clustered_levels = colnames(dist_mat)[order]
+
+  if (!is.null(epi_dat)) {
+    if (is.null(key)) {
+      stop("Must provide key to join by")
+    }
+    axis_lab = data.frame(label = clustered_levels) |> dplyr::left_join(epi_dat, by=c("label" = key)) |> dplyr::pull(disp)
+  } else {
+    axis_lab = clustered_levels
+  }
+
+  to_plot <- to_plot |>
+    dplyr::mutate(sample.x = forcats::fct_relevel(sample.x, clustered_levels),
+           sample.y = forcats::fct_relevel(sample.y, clustered_levels))
+  g <- ggplot(to_plot, aes(x = sample.x, y = sample.y, fill = value)) +
+    geom_tile() +
+    theme(axis.text.x = element_text(angle = 90, size = 5), axis.text.y = element_text(size =5)) +
+    scale_x_discrete(labels = axis_lab) +
+    scale_y_discrete(labels = axis_lab) +
+    scale_fill_viridis_c()
+
+  # if (!is.null(annotation)) {
+  #   g <- g + geom_text(aes(label = [[annotation]]))
+  # }
+
+  g
+}
+
+matrix_to_longformat <- function(mat) {
+  as.data.frame(mat) |>
+    tibble::rownames_to_column("sample.x") |>
+    tidyr::pivot_longer(-sample.x, names_to = "sample.y", values_to = "value")
+}
+
+
+generate_jaccard_dist_matrix <- function(moire_dat) {
+  data_matrix <- matrix(unlist(purrr::transpose(moire_dat$data)), ncol = length(moire_dat$sample_ids), byrow = F)
+  mat <- jaccard_dist(data_matrix)
+  colnames(mat) <- moire_dat$sample_ids
+  rownames(mat) <- moire_dat$sample_ids
+  mat
+}
+
+dmat <- dres[, , "estimate"]
+dmat[upper.tri(dmat)] <- t(dmat)[upper.tri(t(dmat))]
+g <- plot_heatmap(dmat)
+ggplotly(g)
+
+
+```

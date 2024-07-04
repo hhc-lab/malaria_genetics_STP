@@ -1,0 +1,30 @@
+Output from NeEstimator v2.1
+Starting time: Fri May 10 12:59:39 2024
+Input File: "div_genotype_10_11_1664.dat"
+
+Run up to Sample 2 
+Number of Loci = 964
+
+
+Output for 3 TEMPORAL METHODS, Plan II:	Pk (Pollak), NT (Nei/Tajima), JR (Jorde/Ryman)
+
+Lowest allele frequency used:   0.0500
+Each sample pair of one population outputs one line for each method.
+Consecutive populations are separated by one blank line.
+Up to 10 righmost characters are printed per sample name in Sample Pair.
+--------------------------------------------------------------------------------------------------------------------------------
+    Sample Pair IDs      Generations  Method Harmonic   #Indep.     F        F'        Ne                   CIs for Ne
+(last 10 chars each ID)                      Mean Size  Alleles                                   Parametric          JackKnife
+--------------------------------------------------------------------------------------------------------------------------------
+         1<->2            0.0 & 9.0     Pk     105.7       451  0.22250   0.21304     21.1      18.4     24.1      19.0     23.4
+         1<->2            0.0 & 9.0     NT     105.7       451  0.20265   0.19319     23.3      20.2     26.6      21.1     25.6
+         1<->2            0.0 & 9.0     JR     105.7       451  0.26824   0.24274     18.5      16.2     21.0      16.9     20.5
+
+
+Number of populations = 1, with 2 samples
+Number of sample pairs analyzed = 1
+------------------------------------------
+
+Ending time: Fri May 10 12:59:39 2024
+-------------------------------------
+

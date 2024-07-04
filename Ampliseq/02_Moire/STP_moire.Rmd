@@ -1,0 +1,729 @@
+---
+title: "STP_moire"
+author: "Angie"
+date: "2023-11-07"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+**Load libraries and working directory**
+```{r load libs, echo=FALSE, warning = FALSE, message= FALSE}
+
+library(moire)
+library(dcifer)
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+library(reshape2)
+library(tidyr)
+library(waldo)
+library(tidyverse)
+library(stringr)
+library(tools)
+library(purrr)
+library(parallel)
+library(data.table)
+library(ggalt)
+library(vctrs)
+library(plotly)
+library(cowplot)
+library(igraph)
+library(descriptr)
+library(Polychrome)
+library(trelliscopejs)
+library(crosstalk)
+library(shiny)
+library(htmltools)
+library(htmlwidgets)
+library(viridis)
+library(geojsonio)
+library(geojsonsf)
+library(sf)
+library(ggthemes)
+library(rcartocolor)
+library(car)
+library(gridExtra)
+library(ggrepel)
+library(readxl)
+library(scales)
+library(ggnewscale)
+
+setwd("C:/Users/User1/SynologyDrive/UCSF work/STP data/ParagonV4") # Change it to your dir path
+```
+
+
+**Moire run**
+```{r moire mcmc, echo=TRUE}
+#In practice, run the MCMC for much longer with multiple chains. A good starting point would be `1e4` burnin steps, followed by `1e4` samples and careful assessment of estimated parameter distributions.  If you do not run the MCMC for long enough, you risk incorrect estimates because the MCMC may not have converged and adequately explored the parameter space.
+
+#moire_data <- read.csv("C:/Users/User1/SynologyDrive/UCSF work/STP data/ParagonV4/moire_data.csv", header = T)
+#dat <- moire::load_long_form_data(moire_data)
+
+#burnin <- 5e3
+#num_samples <- 1e4
+#parallelly::availableCores() #16
+#num_threads = 14
+
+#If you're pretty confident everything is like a true positive, you could go pretty strong, maybe eps_pos_alpha=1, eps_pos_beta=1000. that would translate into like a prior belief of there being 1 false positive every 500 loci
+
+#mcmc_results <- moire::run_mcmc(
+#    dat, is_missing = dat$is_missing,
+#    allow_relatedness = TRUE,
+#    verbose = T, burnin = burnin, samples_per_chain = num_samples,
+#    pt_chains = 40, pt_num_threads = num_threads, thin = 10, adapt_temp = TRUE,
+#    r_beta = 1, r_alpha = 1, eps_pos_alpha = 0.1, eps_pos_beta = 9.9, eps_neg_alpha = 0.1, #eps_neg_beta = 9.9)
+
+#readr::write_rds(moire_results, file=file.path('moire_results.rds'))
+
+```
+
+
+# Chapter 4 - Post Moire exploration
+
+**MCMC diagnostics**
+```{r moire chain diagnostics, echo=FALSE, warning = FALSE, message= FALSE}
+
+# Examine input/output files
+data0 <- read.csv("C:/Users/User1/SynologyDrive/UCSF work/STP data/ParagonV4/data0.csv", header = T)
+moire_results <- readr::read_rds("C:/Users/User1/SynologyDrive/UCSF work/STP data/ParagonV4/moire/moire_results.rds")
+moire_data <- read.csv("C:/Users/User1/SynologyDrive/UCSF work/STP data/ParagonV4/moire/moire_data.csv", header = T)
+dat <- moire::load_long_form_data(moire_data)
+
+# Convergence
+plot_posterior_llik <- function(moire_results) {
+  # does not currently support multiple chains
+  posterior_burnin <- moire_results$chains[[1]]$posterior_burnin
+  posterior_sample <- moire_results$chains[[1]]$posterior_sample
+  prior_burnin <- moire_results$chains[[1]]$prior_burnin
+  prior_sample <- moire_results$chains[[1]]$prior_sample
+  likelihood_burnin <- moire_results$chains[[1]]$llik_burnin
+  likelihood_sample <- moire_results$chains[[1]]$llik_sample
+  total = length(posterior_burnin) + length(posterior_sample)
+  dat <- rbind(
+    data.frame(llik = "posterior", value = c(posterior_burnin, posterior_sample), sample = 1:total),
+    data.frame(llik = "prior", value = c(prior_burnin, prior_sample), sample = 1:total),
+    data.frame(llik = "likelihood", value = c(likelihood_burnin, likelihood_sample), sample = 1:total)
+  )
+  g <- ggplot(dat, aes(x = sample, y = value, color = llik, group = llik)) +
+    geom_line() +
+    geom_vline(xintercept = length(posterior_burnin), linetype = "dashed", alpha = .5)
+  g
+}
+
+ggplotly(plot_posterior_llik(moire_results))
+
+# Chain swap
+plot_chain_swap_dist <- function(moire_results) {
+  swap_dist <- moire_results$chains[[1]]$swap_acceptances / moire_results$args$samples_per_chain
+  temps <- moire_results$chains[[1]]$temp_gradient
+  swap_idx <- (temps[1:length(temps)-1] + temps[2:length(temps)]) / 2
+  dat <- data.frame(swap_rate = swap_dist, temp = swap_idx)
+  g <- ggplot(dat, aes(x = temp, y = swap_rate)) +
+    geom_point() +
+    geom_vline(data = data.frame(x = temps), aes(xintercept=x), linetype = "dashed", alpha = 0.25) +
+    coord_cartesian(ylim=c(0,1))
+  g
+}
+ggplotly(plot_chain_swap_dist(moire_results))
+
+#Check eps_pos/eps_neg distributions
+plot_eps_pos <- function(moire_results) {
+  eps_pos <- moire::summarize_epsilon_pos(moire_results)
+
+  g <- ggplot(eps_pos, aes(x = sample_id, y = post_eps_pos_med,
+                           ymin = post_eps_pos_lower,
+                           ymax = post_eps_pos_upper)) +
+    geom_errorbar() +
+    geom_point() +
+    theme(axis.text.x = element_blank())
+
+  g
+}
+
+plot_eps_neg <- function(moire_results) {
+  eps_neg <- moire::summarize_epsilon_neg(moire_results)
+
+  g <- ggplot(eps_neg, aes(x = sample_id, y = post_eps_neg_med,
+                           ymin = post_eps_neg_lower,
+                           ymax = post_eps_neg_upper)) +
+    geom_errorbar() +
+    geom_point() +
+    theme(axis.text.x = element_blank())
+
+  g
+}
+
+ggplotly(plot_eps_pos(moire_results))
+ggplotly(plot_eps_neg(moire_results))
+
+```
+
+
+
+**Population coi estimates**
+```{r moire population COI, echo=FALSE, warning = FALSE, message= FALSE}
+
+# Plot coi MCMC convergence
+plot_mean_coi_trace <- function(moire_results) {
+  mean_coi <- moire_results$chains[[1]]$mean_coi
+  sample <- 1:length(mean_coi)
+
+  plot_df <- data.frame(mean_coi, sample)
+  g <- ggplot(plot_df, aes(y = mean_coi, x = sample)) +
+    geom_line()
+  g
+}
+
+ggplotly(plot_mean_coi_trace(moire_results))
+
+
+# Plot population mean coi
+plot_mean_coi_hist <- function(moire_results) {
+  mean_coi <- moire_results$chains[[1]]$mean_coi
+  upper_mean_coi <- quantile(mean_coi, .975)
+  lower_mean_coi <- quantile(mean_coi, .025)
+  mid_mean_coi <- mean(mean_coi)
+
+  annotations = data.frame(
+    label = c("upper", "mean", "lower"),
+    value = c(upper_mean_coi, mid_mean_coi, lower_mean_coi)
+  )
+
+  plot_df <- data.frame(mean_coi)
+  g <- ggplot(plot_df, aes(x = mean_coi)) +
+    geom_histogram() +
+    geom_vline(data=annotations, aes(xintercept = value, color = label)) +
+    xlab("COI") +
+    ylab("Frequency")
+
+  g
+}
+
+ggplotly(plot_mean_coi_hist(moire_results))
+
+```
+
+
+**coi, effective coi, within-host relatedness**
+```{r moire COI eCOI Relatedness, echo=FALSE, warning = FALSE, message= FALSE} 
+
+# Create summary data
+relatedness_summary <- moire::summarize_relatedness(moire_results)
+eff_coi_summary <- moire::summarize_effective_coi(moire_results)
+coi_summary <- moire::summarize_coi(moire_results)
+meta <- readr::read_csv(file.path("./combine_list/metadata.csv"), show_col_types = FALSE)
+
+# Merge data
+sample_data <- list(coi_summary, eff_coi_summary, relatedness_summary)
+sample_data %<>% reduce(full_join, by='sample_id')
+
+# Plot individual coi median
+plot_coi_med <- function(moire_results) {
+  coi_summary <- moire::summarize_coi(moire_results)
+
+  g <- ggplot(coi_summary, aes(x = sample_id, y = post_coi_med,
+                           ymin = post_coi_lower,
+                           ymax = post_coi_upper)) +
+    geom_errorbar() +
+    geom_point() +
+    theme_classic(base_size = 10) +
+    theme(axis.text.x = element_text(angle = 90),
+        strip.background = element_blank(),
+        strip.text = element_blank())
+
+  g
+}
+ggplotly(plot_coi_med(moire_results))
+
+# Plot individual coi mean
+plot_coi_mean <- function(moire_results) {
+  coi_summary <- moire::summarize_coi(moire_results)
+
+  g <- ggplot(coi_summary, aes(x = sample_id, y = post_coi_mean,
+                           ymin = post_coi_lower,
+                           ymax = post_coi_upper)) +
+    geom_errorbar() +
+    geom_point() +
+    theme_classic(base_size = 10) +
+    theme(axis.text.x = element_text(angle = 90),
+        strip.background = element_blank(),
+        strip.text = element_blank())
+
+  g
+}
+ggplotly(plot_coi_mean(moire_results))
+
+
+# Plot individual effective coi median
+plot_eff_coi_med <- function(moire_results) {
+  eff_coi <- moire::summarize_effective_coi(moire_results)
+
+  g <- ggplot(eff_coi, aes(x = sample_id, y = post_effective_coi_med,
+                           ymin = post_effective_coi_lower,
+                           ymax = post_effective_coi_upper)) +
+    geom_errorbar() +
+    geom_point() +
+    theme_classic(base_size = 10) +
+    theme(axis.text.x = element_text(angle = 90),
+        strip.background = element_blank(),
+        strip.text = element_blank())
+
+  g
+}
+ggplotly(plot_eff_coi_med(moire_results))
+
+# Plot individual effective coi mean
+plot_eff_coi_mean <- function(moire_results) {
+  eff_coi <- moire::summarize_effective_coi(moire_results)
+
+  g <- ggplot(eff_coi, aes(x = sample_id, y = post_effective_coi_mean,
+                           ymin = post_effective_coi_lower,
+                           ymax = post_effective_coi_upper)) +
+    geom_errorbar() +
+    geom_point() +
+    theme_classic(base_size = 10) +
+    theme(axis.text.x = element_text(angle = 90),
+        strip.background = element_blank(),
+        strip.text = element_blank())
+
+  g
+}
+ggplotly(plot_eff_coi_mean(moire_results))
+
+
+# Plot Relatedness
+plot_relatedness <- function(sample_data){
+  g <- ggplot(sample_data, 
+       aes(x = sample_id, y = post_relatedness_mean, ymin = post_relatedness_lower, ymax = post_relatedness_upper)) +
+  geom_errorbar() +
+  geom_point(aes(size = post_effective_coi_mean)) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "red", alpha = .5) +
+  xlab("Sample ID") +
+  ylab("Estimated relatedness ") +
+  labs(size = "Post. mean effective COI") +
+  theme_classic(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 90),
+        strip.background = element_blank(),
+        strip.text = element_blank())
+  
+  g
+
+}
+
+ggplotly(plot_relatedness(sample_data))
+
+# Plot correlation between coi, eff_coi, and relatedness
+sample_data_select <- sample_data %>% filter(post_effective_coi_mean > 1.1)
+polysample_rw <- merge(sample_data_select, meta, by.x = "sample_id", by.y = "SeqName") 
+polysample_rw %<>% filter(Year != 2005)
+
+plot_coi_effcoi_r <- function(polysample_rw){
+  max_coi <- round(max(polysample_rw$post_coi_mean))
+  g <- ggplot(polysample_rw, 
+  aes(x = post_coi_mean, y = post_effective_coi_mean, label = sample_id)) +
+  geom_point(aes(color =  post_relatedness_mean)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "solid", color = "gray") +
+  scale_x_continuous(expand = c(0,0), limits = c(0, max_coi + 1), breaks = seq(from = 1, to = max_coi + 1, 1)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, max_coi + 1), breaks = seq(from = 1, to = max_coi + 1, 1)) +
+  theme_classic() +
+  scale_colour_gradient(low = "blue", high = "red", na.value = NA, name = "rw") +
+  facet_wrap(~Year) +
+  xlab("MOI") +
+  ylab("eMOI") +
+  ggtitle("MOI, eMOI & Relatedness") +
+  theme_minimal()
+  
+  g
+}  
+  
+d <- ggplotly(plot_coi_effcoi_r(polysample_rw))
+d
+
+```
+
+**Summary/raw distribution of coi, eff_coi, relatedness from moire**
+```{r moire summary, echo=FALSE, warning = FALSE, message= FALSE}
+
+# COI mean summary
+coi_summary <- moire::summarize_coi(moire_results)
+print(coi_summary)
+a <- ggplot(coi_summary, aes(x=post_coi_mean)) + 
+  geom_histogram(bins=8) +
+  geom_vline(aes(xintercept = mean(post_coi_mean)), color = "gray", linetype='dashed') +
+  geom_label(x=1.8, y=15, aes(label = sprintf("Mean COI: %s", round(mean(post_coi_mean),2)))) +
+  scale_x_continuous(name = "Mean COI", breaks= seq(0,4,0.5)) +
+  ylab ("Count") +
+  ggtitle("Distribution of Mean COI") +
+  theme_classic()
+a <- ggplotly(a)
+
+# Effective COI mean summary
+eff_coi_summary <- moire::summarize_effective_coi(moire_results)
+print(eff_coi_summary)
+b <- ggplot(eff_coi_summary, aes(x=post_effective_coi_mean)) + 
+  geom_histogram(bins=8) +
+  geom_vline(aes(xintercept = mean(post_effective_coi_mean)), color = "gray", linetype = "dashed") +
+  geom_label(x=1.4, y=15, aes(label = sprintf("Mean effective COI: %s", round(mean(post_effective_coi_mean),2)))) +
+  xlab("Mean Effective COI") + 
+  ylab("Count") +
+  ggtitle("Distribution of Mean Effective COI") +
+  theme_classic()
+b <- ggplotly(b)
+
+# Relatedness mean summary
+relatedness_summary <- moire::summarize_relatedness(moire_results)
+print(relatedness_summary)
+
+# Extract post_coi_med > 1 samples - which have eff_coi & relatedness estimates
+relatedness_id <- coi_summary %>% filter(post_coi_med > 1) %>% pull(sample_id)
+sample_data_select <- sample_data %>% filter(post_coi_med > 1)
+
+# Distribution of relatedness
+c <- ggplot(data = sample_data_select, aes(x=post_relatedness_mean)) + 
+  geom_histogram(aes(y = after_stat(count)), bins = 8) +
+  geom_vline(aes(xintercept = mean(post_relatedness_mean)), color = "gray", linetype = "dashed") +
+  geom_label(x=0.65, y=3.6, aes(label = sprintf("Mean relatedness: %s", 
+                                            round(mean(post_relatedness_mean),2)))) +
+  scale_x_continuous(breaks = seq(0, 1, 0.1)) +
+  xlab("Mean Relatedness") + 
+  ylab("Count") +
+  ggtitle("Distribution of Mean Relatedness") +
+  theme_classic()
+c <- ggplotly(c)
+
+# Combine plots - Paper Figure 1
+subplot(a, b, c, d, nrows = 2)
+
+```
+
+
+**Temporal and spatial trend of MOI, eMOI, Rw**
+```{r moire temporal, echo=FALSE, warning = FALSE, message= FALSE}
+###Temporal
+# Merge data & Define polyclonal infection as eMOI mean > 1.1
+moire_merge <- merge(sample_data, meta, by.x = "sample_id", by.y = "SeqName")
+moire_merge %<>%
+  mutate(infection = ifelse(post_effective_coi_mean > 1.1, "poly", "mono"),
+         area = ifelse(District == "AG", "Capital
+                       ", "Others")) %<>%
+  rename(sampleID = sample_id)
+moire_infection <- moire_merge %>%
+  group_by(Year, area, infection) %>%
+  summarize(count = n())
+moire_infection %<>% pivot_wider(names_from = infection, values_from = count)
+moire_infection %<>% mutate(N = mono + poly) %<>% 
+  mutate(Polyclonal = round(poly/N, 3)*100, Monoclonal = round(mono/N, 3)*100)
+
+moire_merge %<>% select(- c("Redo1", "Redo2", "Contam_NC1", "Contam_NC2", "Note"))
+
+write.csv(moire_merge, "./combine_list/moire_merge.csv", row.names = F)
+
+### See annual distribution of mean MOI, mean eMOI, and mean rw
+moire_merge %>%
+  ggplot()+
+  geom_histogram(aes(x = post_coi_mean)) +
+  scale_x_continuous(breaks = seq(1, max(moire_merge$post_coi_mean), by = 1)) +
+  facet_wrap(~Year)
+
+moire_merge %>%
+  ggplot()+
+  geom_histogram(aes(x = post_effective_coi_mean)) +
+  scale_x_continuous(breaks = seq(1, max(moire_merge$post_effective_coi_mean), by = 1)) +
+  facet_wrap(~Year)
+
+moire_merge %>%
+  filter(infection == "poly") %>%
+  ggplot()+
+  geom_histogram(aes(x = post_relatedness_mean)) +
+  scale_x_continuous(breaks = seq(0, max(moire_merge$post_relatedness_mean), by = 0.1)) +
+  facet_wrap(~Year)
+
+# Calculate annual average of MOI mean
+se <- function(data) {
+  sd <- sd(data)
+  sample_size <- length(data)
+  standard_error <- sd / sqrt(sample_size)
+  
+  return(standard_error)
+}
+
+moi_dist <- moire_merge %>%
+  filter(Year != 2005) %>%
+  group_by(Year) %>%
+  summarize(N_MOI = n(),
+            mean_MOI = mean(post_coi_mean),
+            se_MOI = se(post_coi_mean),
+            upper_MOI = mean_MOI + 1.96*se_MOI,
+            lower_MOI = mean_MOI - 1.96*se_MOI)
+            
+
+# Calculate annual average of eMOI mean
+emoi_dist <- moire_merge %>%
+  filter(Year != 2005) %>%
+  group_by(Year) %>%
+  summarize(N_eMOI = n(),
+            mean_eMOI = mean(post_effective_coi_mean),
+            se_eMOI = se(post_effective_coi_mean),
+            upper_eMOI = mean_eMOI + 1.96*se_eMOI,
+            lower_eMOI = mean_eMOI - 1.96*se_eMOI)
+
+# Calculate annual average of rw mean
+rw_dist <- moire_merge %>%
+  filter(Year != 2005) %>%
+  filter(infection == "poly") %>%
+  group_by(Year) %>%
+  summarize(N_rw = n(),
+            mean_rw = mean(post_relatedness_mean),
+            se_rw = se(post_relatedness_mean),
+            upper_rw = mean_rw + 1.96*se_rw,
+            lower_rw = mean_rw - 1.96*se_rw)
+
+
+#### Combine MOI, eMOI, rw and make combined plot
+joined_df <- moi_dist %>%
+  left_join(emoi_dist, by = "Year")
+
+joined_df_long <- reshape(data = joined_df,
+               idvar= "Year",
+               varying = 2:11, #We need to specify here the columns to be reshaped
+               sep= "_",
+               timevar= "type",
+               times = c("MOI", "eMOI"),
+               new.row.names= 1:10000,
+               direction = "long")
+joined_df_long <- joined_df_long %>%
+  mutate(`Year (N)` = paste0(Year, " (", N, ")"))
+
+#n_colors <- 3 #change to no. of groups
+#colors <- scales::hue_pal()(n_colors)
+#print(colors)
+                 
+ggplot(joined_df_long, aes(x = `Year (N)`, group = type)) +
+  geom_pointrange(aes(y = mean, ymin = lower, ymax = upper, color = type),
+                  position = position_dodge(width = 0.7)) +
+  theme_minimal(base_size = 17) +
+  scale_y_continuous(name = "Estimate", breaks = seq(0,2, by=.1)) 
+
+################## Add IR & rw 
+moire_infection %<>%
+  mutate(IR = case_when(
+    Year == 2005 ~ 18.76,
+    Year == 2010 ~ 2.01,
+    Year == 2011 ~ 3.83,
+    Year == 2012 ~ 6.86,
+    Year == 2013 ~ 4.93, 
+    Year == 2014 ~ 0.94,
+    Year == 2015 ~ 1.03,
+    Year == 2016 ~ 0.97
+  ))
+
+moire_infection_long <- moire_infection %>%
+  filter(Year != 2005) %>% 
+  pivot_longer(
+    cols = c(Monoclonal, Polyclonal),  
+    names_to = "Infection",    
+    values_to = "Frequency")
+
+moire_infection_long <- moire_infection_long %>%
+  mutate(`Year (N)` = paste0(Year, " (", N, ")"))
+
+### Make combine plot of IR and polyclonal sample proportion
+#AG
+p1 <- moire_infection_long %>%
+  filter(area == "Capital") %>%
+  ggplot(aes(x = `Year (N)`, y = Frequency, group = Infection)) +
+  geom_col(aes(fill = Infection, alpha = 0.9)) +
+  geom_line(aes(y = IR, color = "Incidence %")) +
+  xlab("Year (N)") +
+  ylab("Frequency %") +
+  scale_color_manual(values = c("Incidence %" = "black")) +
+  theme(axis.text.x = element_text(size = 10), axis.text.y = element_text(size = 10)) +
+  theme_classic() +
+  ggtitle("Capital district (AG)")
+
+# Non-AG
+p2 <- moire_infection_long %>%
+  filter(area == "Others") %>%
+  ggplot(aes(x = `Year (N)`, y = Frequency, group = Infection)) +
+  geom_col(aes(fill = Infection, alpha = 0.9)) +
+  geom_line(aes(y = IR, color = "Incidence %")) +
+  xlab("Year (N)") +
+  ylab("Frequency %") +
+  scale_color_manual(values = c("Incidence %" = "black")) +
+  theme(axis.text.x = element_text(size = 10), axis.text.y = element_text(size = 10)) +
+  theme_classic() +
+  ggtitle("Other districts")
+
+# Rw
+rw_dist <- rw_dist %>%
+  mutate(`Year (N)` = paste0(Year, " (", N_rw, ")"))
+p3 <- ggplot(rw_dist, aes(x = `Year (N)`)) +
+  geom_pointrange(aes(y = mean_rw, ymin = lower_rw, ymax = upper_rw)) +
+  theme_minimal(base_size = 10) +
+  scale_y_continuous(name = "Within-host relatedness", breaks = seq(0,1, by=.1)) +
+   theme_classic()
+
+combined_plot <- plot_grid(p1 + theme(legend.position = "none"),
+                           p2 + theme(legend.position = "none"),
+                           ncol = 2, rel_widths = c(5,5))
+print(combined_plot)
+
+```
+
+
+
+# Chapter 5 - Allele frequency and heterozygoisty 
+
+**Allele frequencies**
+```{r allele freq, echo=FALSE, warning = FALSE, message= FALSE}
+
+# Calculate naive allele frequencies
+naive_AF_list <- calculate_naive_allele_frequencies(dat$data)
+sapply(naive_AF_list , sum) #Check if the naive AF sums are all equal to 1.  
+naive_AF_table <- naive_AF_list %>% 
+  map_df(as_tibble) %>%
+  mutate(target = map_depth(naive_AF_list, 1, names) %>% unlist(use.names = F)) %>%
+  dplyr::rename(naive_AF = value)
+
+
+# Moire posterior AF
+allele_freq_summary <- moire::summarize_allele_freqs(moire_results)
+print(sprintf("Mean of post_allele_freqs_mean %s", mean(allele_freq_summary$post_allele_freqs_mean)))
+
+allele_freq_summary %>% group_by(locus) %>% summarize(sum = sum(post_allele_freqs_mean)) %>% count(sum) #Check if the post mean AF sums are all equal to 1. 
+
+
+# Dcifer estimated AF (Try lrank = 2,3,4)
+filtered_dat <- moire_data %>% filter(! locus %in% dat$uninformative_loci)
+dsmp <- formatDat(filtered_dat, svar = "sample_id", lvar = "locus", avar = "allele")
+coi_lr4 <- getCOI(dsmp, lrank = 4)
+coi_lr3 <- getCOI(dsmp, lrank = 3) 
+coi_lr2 <- getCOI(dsmp, lrank = 2) # All the same
+
+
+afreq3 <- calcAfreq(dsmp, coi_lr3, tol = 1e-5) # Use the 4th highest coi estimates
+dcifer_af <- do.call(rbind, 
+        lapply(names(afreq3), function(i){
+          data.frame(locus = i, dcifer_af3 = afreq3[[i]])
+        }))
+dcifer_af %>% group_by(locus) %>% summarize(sum = sum(dcifer_af3)) %>% count(sum)
+dcifer_af %<>% mutate(allele = rownames(dcifer_af)) %<>% rename(Dcifer_AF = dcifer_af3) 
+dcifer_af %<>% select(allele, Dcifer_AF)
+
+
+# Merge all three differnt estimates (Naive, Moire, Dcifer)
+allele_freq_data <- data.frame(
+  allele_freq_summary,
+  naive_allele_frequency = unlist(
+    moire::calculate_naive_allele_frequencies(dat$data)
+  )
+)
+
+allele_freq_data <- merge(allele_freq_data, dcifer_af, by = "allele", all.x = T)
+allele_freq_data %<>% arrange(locus, allele)
+
+write.csv(allele_freq_data, "allele_freq.csv", row.names = F)
+
+# Plot AF 
+plot_AF <- function(allele_freq_data){ 
+  g <- ggplot(allele_freq_data) +
+  geom_errorbar(aes(
+    x = forcats::fct_reorder(allele, post_allele_freqs_mean),
+    y = post_allele_freqs_mean,
+    ymax = post_allele_freqs_upper,
+    ymin = post_allele_freqs_lower)) +
+  geom_point(aes(y = post_allele_freqs_mean, x = forcats::fct_reorder(allele, post_allele_freqs_mean)), color = "green", alpha = .3) +
+  geom_point(aes(y = Dcifer_AF, x = forcats::fct_reorder(allele, post_allele_freqs_mean)), color = "purple", alpha = .3) +
+  geom_point(aes(y = naive_allele_frequency, x = forcats::fct_reorder(allele, post_allele_freqs_mean)), color = "red", alpha = .3) +
+  ylab("Allele Freqeuncy") +
+  xlab("Allele") +
+  theme_classic(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0, hjust = 1, size = 5.5)) +
+  expand_limits(x = 0, y = 0) +
+  ggtitle("Estimates of Allele Frequencies")
+ 
+  g 
+}
+
+ggplotly(plot_AF(allele_freq_data))
+
+allele_freq_summary_table <- ds_freq_table(allele_freq_summary, post_allele_freqs_mean, 10)
+print(allele_freq_summary_table)
+
+
+# Plot population AF with within-host AF
+af_plot_table <- allele_freq_summary %>% select(allele, locus, post_allele_freqs_mean)
+data0_plot_table <- data0 %>% group_by(allele.type) %>% 
+  summarise(sample_count = n(),
+            within_host_mean_AF = mean(norm.reads.locus))
+
+allele_plot_table <- merge(af_plot_table, data0_plot_table, by.x = "allele", by.y = "allele.type")
+allele_plot_table %<>% mutate(chromosome = substr(locus, 7, 8))
+
+plot_AF_with_pop <- function(allele_plot_table){
+g <- allele_plot_table %>%
+  ggplot(aes(x = post_allele_freqs_mean, y = within_host_mean_AF, color = chromosome)) +
+  geom_point(aes(size = sample_count)) +
+  geom_vline(aes(xintercept = 0.1), linetype = "dashed", color = "red") +
+  geom_hline(aes(yintercept = 0.1), linetype = "dashed", color = "red") 
+ g
+}
+
+ggplotly(plot_AF_with_pop(allele_plot_table))
+
+low_af_alleles <- allele_plot_table %>%
+  filter(post_allele_freqs_mean < 0.1 & within_host_mean_AF < 0.1)
+
+low_af_alleles_table <- low_af_alleles %>% group_by(locus) %>% summarise(low_af_allele_counts = n()) %>% arrange(desc(low_af_allele_counts))
+
+#write.csv(low_af_alleles_table, "Locus_with_low_af_allele_counts.csv")
+
+```
+
+
+**Heterozygosity**
+```{r moire heterozygosity, echo=FALSE, warning = FALSE, message= FALSE}
+# Calculate Heterozygosity (He)
+# The diversity within the population. With COI, moire can summarize the posterior distribution to provide quantile estimates of He.
+
+he_summary <- moire::summarize_he(moire_results)
+print(sprintf("Median of post_HE_med %s", median(he_summary$post_stat_med)))
+print(sprintf("Mean of post_HE_mean %s", mean(he_summary$post_stat_mean)))
+summary(he_summary$post_stat_mean)
+
+# He plot
+He_plot <- ggplot(he_summary, aes(y = post_stat_mean, 
+                       x = forcats::fct_reorder(locus, post_stat_mean))) +
+  geom_errorbar(aes(ymin = post_stat_lower, ymax = post_stat_upper)) +
+  geom_point() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0, hjust = 1, size = 5.5)) +
+  xlab("Locus") +
+  ylab("Expected Heterozygosity") +
+  coord_fixed(ratio = 80)
+He_plot
+
+# HE plot with allele counts
+plot_heterozygosity <- function(moire_results) {
+  allele_counts <- data.frame(
+    locus = moire_results$args$data$loci,
+    allele_count = sapply(moire_results$args$data$data, function(x) length(x[[1]]))
+  )
+
+  he_summ <- moire::summarize_he(moire_results) |> dplyr::left_join(allele_counts)
+
+  g <- ggplot(he_summ,
+         aes(x = locus, y = post_stat_med, ymin = post_stat_lower, ymax = post_stat_upper, color = allele_count)) +
+    geom_errorbar() +
+    geom_point() +
+    ylab("Expected He.") +
+    xlab("Locus") +
+    theme(axis.text.x = element_blank())
+  g
+}
+ggplotly(plot_heterozygosity(moire_results))
+
+```

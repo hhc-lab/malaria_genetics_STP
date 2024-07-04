@@ -1,0 +1,255 @@
+---
+title: "Res_haplotypes_in_clusters"
+author: "Shawn"
+date: '2024-05-05'
+output: html_document
+---
+
+Set working directory
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "C:/Users/shawn0601/Downloads/STP_malaria_data_scripts/Drug_resistance/Data")
+```
+
+Import libraries
+
+```{r libs, echo=FALSE, warning = FALSE, message= FALSE}
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+library(tidyr)
+library(stringr)
+library(lubridate)
+library(timetk)
+library(scatterpie)
+library(ggtext)
+```
+
+Combine cluster data
+
+```{r combine haplotypes and cluster data}
+
+clust <- read.csv("cluster_df.csv")
+clust$Onset <- ymd(clust$Onset)
+clust %<>%
+  mutate(Year_by_rain = case_when(
+    Onset %>% between_time("2010-3-1", "2010-8-31") ~ 2010,
+    Onset %>% between_time("2010-9-1", "2011-7-31") ~ 2011,
+    Onset %>% between_time("2011-9-1", "2012-8-31") ~ 2012,
+    Onset %>% between_time("2012-9-1", "2013-8-31") ~ 2013,
+    Onset %>% between_time("2013-9-1", "2014-8-31") ~ 2014,
+    Onset %>% between_time("2014-9-1", "2015-8-31") ~ 2015,
+    Onset %>% between_time("2015-9-1", "2016-10-31") ~ 2016,
+    T ~ NA))
+
+dd_haplo <- read.csv("dhfr_dhps_haplotypes.csv")
+mdr1_haplo <- read.csv("mdr1_haplotypes.csv")
+crt_haplo <- read.csv("crt_haplotypes.csv")
+
+dd_haplo_clust <- merge(dd_haplo, clust[, c("cluster", "Run", "DNA_tube_ID", "Year_by_rain")], by.x = c("dataset", "SampleID"), by.y = c("Run", "DNA_tube_ID"))
+mdr1_haplo_clust <- merge(mdr1_haplo, clust[, c("cluster", "Run", "DNA_tube_ID", "Year_by_rain")], by.x = c("dataset", "SampleID"), by.y = c("Run", "DNA_tube_ID"))
+crt_haplo_clust <- merge(crt_haplo, clust[, c("cluster", "Run", "DNA_tube_ID", "Year_by_rain")], by.x = c("dataset", "SampleID"), by.y = c("Run", "DNA_tube_ID"))
+
+```
+
+Haplotypes pie graph in top three prevalent cluster for each year
+
+1) dhfr-dhps
+
+```{r dd haplo pie}
+
+#### Check haplotypes in cluster data ####
+preview_dd_haplo <- dd_haplo_clust %>%
+  distinct(dd_AA, Res_lv, hap_r_num) %>%
+  mutate(dd_AA.2 = gsub(".{2}$", "", gsub("-I", "-", dd_AA))) # remove repeated wild-type SNP (dhps 431, 581, 613)
+
+
+#### Select the top three prevalent cluster in each year ####
+dd_clust_pie <- dd_haplo_clust %>%
+  merge(preview_dd_haplo[, c("dd_AA", "dd_AA.2")], by = "dd_AA") %>%
+  group_by(dd_AA.2, Res_lv, hap_r_num, Year_by_rain, cluster) %>%
+  summarise(n = n()) %>%
+  group_by(Year_by_rain, cluster) %>%
+  mutate(total = sum(n),
+         pct = n/total*100) %>%
+  mutate(new_clust = case_when(cluster %in% c(1:9) ~ str_c("C0", cluster), T ~ str_c("C", cluster)),
+         legend_color = case_when(
+           hap_r_num == 1 ~ "#FFFAFA", 
+           hap_r_num == 3 & dd_AA.2 == "NRN-SGK" ~ "#9ECAE1",
+           hap_r_num == 3 & dd_AA.2 == "ICN-AAK" ~ "#4292C6",
+           hap_r_num == 3 & dd_AA.2 == "ICN-SGK" ~ "#08519C",
+           hap_r_num == 4 & dd_AA.2 == "NRN-SGE" ~ "#99D8C9",
+           hap_r_num == 4 & dd_AA.2 == "ICN-AGK" ~ "#66C2A4",
+           hap_r_num == 4 & dd_AA.2 == "ICN-SGE" ~ "#41AE76",
+           hap_r_num == 4 & dd_AA.2 == "IRN-AAK" ~ "#238B45",
+           hap_r_num == 4 & dd_AA.2 == "IRN-SGK" ~ "#006D2C",
+           hap_r_num == 5 & dd_AA.2 == "IRN-AGK" ~ "#EF6548",
+           hap_r_num == 5 & dd_AA.2 == "IRN-SGE" ~ "#B30000", T ~ NA)) %>%
+  group_by(cluster) %>%
+  mutate(Count_of_year = n_distinct(Year_by_rain)) %>%
+  group_by(Year_by_rain) %>%
+  mutate(ranks = dense_rank(-total))
+
+top3_dd_clust_pie <- dd_clust_pie %>%
+  group_by(cluster) %>%
+  filter(min(ranks) <= 3) %>%
+  mutate(Start_yr = min(Year_by_rain),
+         r = sqrt(total/pi),
+         Start_yr_clust = str_c(Start_yr, "_", cluster)) %>%
+  select(dd_AA.2, Year_by_rain, Start_yr, cluster, Start_yr_clust, new_clust, pct, r) %>%
+  ungroup() %>%
+  arrange(cluster, Start_yr) %>%
+  mutate(clust_code = dense_rank(desc(Start_yr_clust))) %>%
+  pivot_wider(id_cols = c(clust_code, new_clust, Year_by_rain, r), 
+              values_from = pct, names_from = c(dd_AA.2)) %>%
+  arrange(clust_code) %>%
+  mutate_if(is.numeric, ~replace_na(., 0)) %>%
+  relocate(c("NRN-SGK", "ICN-AAK", "ICN-SGK", "NRN-SGE",
+             "ICN-SGE", "IRN-SGK", "IRN-AGK", "IRN-SGE"), .after = r)
+
+
+#### Scatterpie plot ####
+dd_yaxis <- unique(top3_dd_clust_pie$new_clust)
+dd_color <- dd_clust_pie %>%
+  group_by(cluster) %>%
+  filter(min(ranks) <= 3) %>%
+  ungroup() %>%
+  select(dd_AA.2, legend_color) %>%
+  distinct() %>%
+  arrange(factor(dd_AA.2, levels = c("NRN-SGK", "ICN-AAK", "ICN-SGK", "NRN-SGE",
+                                     "ICN-SGE", "IRN-SGK", "IRN-AGK", "IRN-SGE")))
+
+plot_top3_dd_clust_pie <- ggplot() +
+  geom_scatterpie(aes(x = Year_by_rain, y = clust_code, r = r/15), 
+                  data = top3_dd_clust_pie, 
+                  cols = colnames(top3_dd_clust_pie[,c(5:12)]),
+                  alpha = .8) +
+  scale_fill_manual(values = dd_color$legend_color, 
+                    labels = dd_color$dd_AA.2) + # color by haplotypes and "R" number
+  # scale_fill_paletteer_d("ggsci::schwifty_rickandmorty") + # color by haplotypes
+  scale_x_continuous(breaks = 2010:2016) +
+  scale_y_continuous(breaks = 1:12, labels = dd_yaxis) +
+  geom_scatterpie_legend(r = (top3_dd_clust_pie$r)/15, 
+                         x = 2010, y = 1, n = 3, labeller = function(x) x*225) +
+  coord_fixed() +
+  guides(fill = guide_legend(title = "Haplotypes")) +
+  theme_classic() +
+  labs(title = "A. *dhfr-dhps*", y = "Clusters", x = "")+
+  theme(text = element_text(size=18),
+        plot.title = element_markdown())
+plot_top3_dd_clust_pie
+
+
+#### top3 clusters coverage ####
+top3_dd_clust_coverage <- dd_clust_pie %>%
+  group_by(new_clust) %>%
+  summarise(total_n = sum(n)) %>%
+  mutate(all_n = sum(total_n),
+         pct_all_clust = total_n/all_n*100) %>%
+  filter(new_clust %in% top3_dd_clust_pie$new_clust)
+print(paste("The total coverage(%) of top 3 clusters = ",
+            paste0(round(sum(top3_dd_clust_coverage$pct_all_clust),2))))
+
+
+```
+
+2) mdr1
+
+```{r mdr1 haplo pie}
+
+#### Check haplotypes in cluster data ####
+preview_mdr1_haplo <- mdr1_haplo_clust %>%
+  distinct(mdr1_AA, Res_lv, hap_r_num)
+
+
+#### Select the top three prevalent cluster in each year ####
+mdr1_clust_pie <- mdr1_haplo_clust %>%
+  group_by(mdr1_AA, Res_lv, hap_r_num, Year_by_rain, cluster) %>%
+  summarise(n = n()) %>%
+  group_by(Year_by_rain, cluster) %>%
+  mutate(total = sum(n),
+         pct = n/total*100) %>%
+  mutate(new_clust = case_when(cluster %in% c(1:9) ~ str_c("C0", cluster), T ~ str_c("C", cluster)),
+         legend_color = case_when(
+           mdr1_AA == "NYD" ~ "#FFFFFF",
+           mdr1_AA == "NFD" ~ "#76669B",
+           mdr1_AA == "NYY" ~ "#DD708E",
+           mdr1_AA == "YFD" ~ "#F5B35E",
+           mdr1_AA == "YYD" ~ "#EA7246",
+           mdr1_AA == "YYY" ~ "#C43142", T ~ NA)) %>%
+  group_by(cluster) %>%
+  mutate(Count_of_year = n_distinct(Year_by_rain)) %>%
+  group_by(Year_by_rain) %>%
+  mutate(ranks = dense_rank(-total))
+
+top3_mdr1_clust_pie <- mdr1_clust_pie %>%
+  group_by(cluster) %>%
+  filter(min(ranks) <= 3) %>%
+  mutate(Start_yr = min(Year_by_rain),
+         r = sqrt(total/pi),
+         Start_yr_clust = str_c(Start_yr, "_", cluster)) %>%
+  select(mdr1_AA, Year_by_rain, Start_yr, cluster, Start_yr_clust, new_clust, pct, r) %>%
+  ungroup() %>%
+  arrange(cluster, Start_yr) %>%
+  mutate(clust_code = dense_rank(desc(Start_yr_clust))) %>%
+  pivot_wider(id_cols = c(clust_code, new_clust, Year_by_rain, r), 
+              values_from = pct, names_from = c(mdr1_AA)) %>%
+  arrange(clust_code) %>%
+  mutate_if(is.numeric, ~replace_na(., 0)) %>%
+  relocate(c("NFD", "NYY", "YFD", "YYD", "YYY"), .after = r)
+
+
+#### Scatterpie plot ####
+mdr1_yaxis <- unique(top3_mdr1_clust_pie$new_clust)
+mdr1_color <- mdr1_clust_pie %>%
+  group_by(cluster) %>%
+  filter(min(ranks) <= 3) %>%
+  ungroup() %>%
+  select(mdr1_AA, legend_color) %>%
+  distinct() %>%
+  arrange(factor(mdr1_AA, levels = c("NFD", "NYY", "YFD", "YYD", "YYY")))
+
+plot_top3_mdr1_clust_pie <- ggplot() +
+  geom_scatterpie(aes(x = Year_by_rain, y = clust_code, r = r/15), 
+                  data = top3_mdr1_clust_pie, 
+                  cols = colnames(top3_mdr1_clust_pie[,c(5:9)]),
+                  alpha = .8) +
+  scale_fill_manual(values = mdr1_color$legend_color, 
+                    labels = mdr1_color$mdr1_AA) + # color by haplotypes and "R" number
+  scale_x_continuous(breaks = 2010:2016) +
+  scale_y_continuous(breaks = 1:12, labels = dd_yaxis) +
+  geom_scatterpie_legend(r = (top3_mdr1_clust_pie$r)/15, 
+                         x = 2010, y = 1, n = 3, labeller = function(x) x*225) +
+  coord_fixed() +
+  guides(fill = guide_legend(title = "Haplotypes")) +
+  theme_classic() +
+  labs(title = "B. *mdr1*", y = "Clusters", x = "")+
+  theme(text = element_text(size=18),
+        plot.title = element_markdown())
+plot_top3_mdr1_clust_pie
+
+
+#### top3 clusters coverage ####
+top3_mdr1_clust_coverage <- mdr1_clust_pie %>%
+  group_by(new_clust) %>%
+  summarise(total_n = sum(n)) %>%
+  mutate(all_n = sum(total_n),
+         pct_all_clust = total_n/all_n*100) %>%
+  filter(new_clust %in% top3_mdr1_clust_pie$new_clust)
+print(paste("The total coverage(%) of top 3 clusters = ",
+            paste0(round(sum(top3_mdr1_clust_coverage$pct_all_clust),2))))
+
+
+```
+
+3) crt
+
+```{r crt haplo pie}
+
+#### Check haplotypes in cluster data ####
+preview_crt_haplo <- crt_haplo_clust %>%
+  distinct(crt_AA, Res_lv, hap_r_num)
+
+# Since all major haplotypes has same patterns, temporal changes of crt haplotypes is not discussed further.
+
+```
